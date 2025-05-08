@@ -4,17 +4,26 @@ import streamlit as st
 import pandas as pd
 from snowflake.snowpark.context import get_active_session
 
-# --- Configurable Variables ---
-DB = "CORTEX_ANALYST_DEMO"
-SCHEMA = "REVENUE_TIMESERIES"
-STAGE = "RAW_DATA"
-FILE_NAME = "revenue_timeseries.yaml"
-STAGE_PATH = f"@{DB}.{SCHEMA}.{STAGE}/{FILE_NAME}"
+# ──────────────────────────────────────────────────────────────────────────────
+# Configuration
+# ──────────────────────────────────────────────────────────────────────────────
+DB          = "CORTEX_ANALYST_DEMO"
+SCHEMA       = "REVENUE_TIMESERIES"
+STAGE        = "RAW_DATA"
+FILE_NAME    = "revenue_timeseries.yaml"
+STAGE_PATH   = f"@{DB}.{SCHEMA}.{STAGE}/{FILE_NAME}"
 
-# Get session
+# Credits charged per 1 000 successful messages for each semantic model
+CREDIT_RATE = {
+    "default": 67,                 # fallback if model not listed below
+    # "MY_MODEL": 72,              # example custom pricing
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Snowflake session & data load
+# ──────────────────────────────────────────────────────────────────────────────
 session = get_active_session()
 
-# Query Cortex Analyst logs
 query = f"""
 SELECT *
 FROM TABLE(
@@ -24,160 +33,220 @@ FROM TABLE(
   )
 )
 """
+
 df = session.sql(query).to_pandas()
 
-# Convert timestamp
-df['TIMESTAMP'] = pd.to_datetime(df['TIMESTAMP'])
+if df.empty:
+    st.error("No Cortex Analyst log data found. Verify STAGE_PATH or permissions.")
+    st.stop()
 
-# Extract plain text from RESPONSE_BODY
-def extract_text_response(response):
-    try:
-        content = json.loads(response)['message']['content']
-        for item in content:
-            if isinstance(item, dict) and 'text' in item:
-                return item['text']
-    except:
+# ──────────────────────────────────────────────────────────────────────────────
+# Data preparation helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Parse timestamp column
+if "TIMESTAMP" in df.columns:
+    df["TIMESTAMP"] = pd.to_datetime(df["TIMESTAMP"])
+
+# Extract plain-text answer from RESPONSE_BODY JSON
+
+def extract_text_response(response: str | None) -> str | None:
+    if not isinstance(response, str):
         return None
+    try:
+        content = json.loads(response)["message"]["content"]
+        for item in content:
+            if isinstance(item, dict) and "text" in item:
+                return item["text"]
+    except Exception:
+        pass
+    return None
 
-df['TEXT_RESPONSE'] = df['RESPONSE_BODY'].apply(extract_text_response)
+df["TEXT_RESPONSE"] = df["RESPONSE_BODY"].apply(extract_text_response)
 
-# --- Intelligence: Intent Classification ---
-def classify_intent(question):
-    q = str(question).lower()
-    if any(word in q for word in ['trend', 'over time', 'daily', 'weekly', 'monthly']):
-        return 'Trend Analysis'
-    if any(word in q for word in ['average', 'sum', 'count', 'aggregate']):
-        return 'Aggregation'
-    if ' vs ' in q or 'compare' in q:
-        return 'Comparison'
-    if 'anomaly' in q or 'unexpected' in q:
-        return 'Anomaly Detection'
-    return 'Other'
+# Heuristic intent classification
 
-df['INTENT'] = df['LATEST_QUESTION'].apply(classify_intent)
+def classify_intent(question: str | None) -> str:
+    if not isinstance(question, str):
+        return "Other"
+    q = question.lower()
+    if any(w in q for w in ["trend", "over time", "daily", "weekly", "monthly"]):
+        return "Trend Analysis"
+    if any(w in q for w in ["average", "sum", "count", "aggregate"]):
+        return "Aggregation"
+    if " vs " in q or "compare" in q:
+        return "Comparison"
+    if "anomaly" in q or "unexpected" in q:
+        return "Anomaly Detection"
+    return "Other"
 
-# --- Intelligence: Query Complexity Score ---
-def query_complexity(sql):
-    if pd.isna(sql):
+df["INTENT"] = df["LATEST_QUESTION"].apply(classify_intent)
+
+# Simple query complexity metric
+
+def query_complexity(sql: str | None) -> int:
+    if not isinstance(sql, str):
         return 0
-    return sql.count("SELECT") + sql.count("JOIN") + sql.count("WITH")
+    s = sql.upper()
+    return s.count("SELECT") + s.count("JOIN") + s.count("WITH")
 
-df['COMPLEXITY_SCORE'] = df['GENERATED_SQL'].apply(query_complexity)
+df["COMPLEXITY_SCORE"] = df["GENERATED_SQL"].apply(query_complexity)
 
-# --- Sidebar Filters ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Sidebar filters
+# ──────────────────────────────────────────────────────────────────────────────
 st.sidebar.title("Filters")
 
-# User filter
-selected_user = st.sidebar.selectbox("User", ["All"] + sorted(df['USER_NAME'].unique().tolist()))
+selected_user = st.sidebar.selectbox(
+    "User",
+    ["All"] + sorted(df["USER_NAME"].dropna().unique().tolist())
+)
 if selected_user != "All":
-    df = df[df['USER_NAME'] == selected_user]
+    df = df[df["USER_NAME"] == selected_user]
 
-# Semantic model filter
-selected_model = st.sidebar.selectbox("Semantic Model", ["All"] + sorted(df['SEMANTIC_MODEL_NAME'].unique().tolist()))
+selected_model = st.sidebar.selectbox(
+    "Semantic Model",
+    ["All"] + sorted(df["SEMANTIC_MODEL_NAME"].dropna().unique().tolist())
+)
 if selected_model != "All":
-    df = df[df['SEMANTIC_MODEL_NAME'] == selected_model]
+    df = df[df["SEMANTIC_MODEL_NAME"] == selected_model]
 
-# Date range filter
-start_date = st.sidebar.date_input("Start Date", df['TIMESTAMP'].min().date())
-end_date = st.sidebar.date_input("End Date", df['TIMESTAMP'].max().date())
-df = df[(df['TIMESTAMP'].dt.date >= start_date) & (df['TIMESTAMP'].dt.date <= end_date)]
+start_date = st.sidebar.date_input("Start Date", df["TIMESTAMP"].min().date())
+end_date   = st.sidebar.date_input("End Date", df["TIMESTAMP"].max().date())
 
-# Keyword search
-search_term = st.sidebar.text_input("Search (Question or SQL)")
-if search_term:
-    df = df[df['LATEST_QUESTION'].str.contains(search_term, case=False, na=False) |
-            df['GENERATED_SQL'].str.contains(search_term, case=False, na=False)]
+df = df[(df["TIMESTAMP"].dt.date >= start_date) & (df["TIMESTAMP"].dt.date <= end_date)]
 
-# --- Title ---
+# Dollar-per-credit input (replaces search box)
+dollar_per_credit = st.sidebar.number_input(
+    "Dollar Cost per Credit ($)",
+    min_value=0.0,
+    value=3.00,
+    step=0.01,
+    format="%.2f",
+    help="Enter your negotiated price per Snowflake credit."
+)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Dashboard header & KPIs
+# ──────────────────────────────────────────────────────────────────────────────
 st.title("📊 Snowflake Cortex Analyst Dashboard")
 
-# --- KPIs ---
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Requests", len(df))
-col2.metric("Successful Requests", df['GENERATED_SQL'].notnull().sum())
-col3.metric("Failure Rate", f"{100 * (df['GENERATED_SQL'].isnull().sum() / len(df)):.1f}%")
+total_requests      = len(df)
+successful_requests = df["GENERATED_SQL"].notna().sum()
+failure_rate        = 0.0 if total_requests == 0 else 100 * (total_requests - successful_requests) / total_requests
 
-# --- Daily Usage Trend ---
+current_rate = CREDIT_RATE.get(selected_model, CREDIT_RATE["default"])
+credits_used = successful_requests * current_rate / 1000  # float
+cost_estimate = credits_used * dollar_per_credit
+
+kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+kpi1.metric("Total Requests", total_requests)
+kpi2.metric("Successful Requests", successful_requests)
+kpi3.metric("Failure Rate", f"{failure_rate:.1f}%")
+kpi4.metric("Est. Credits Used", f"{credits_used:,.2f}")
+kpi5.metric("Est. Cost ($)", f"${cost_estimate:,.2f}")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Daily usage trend
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("📅 Daily Usage Trend")
-daily_counts = df.groupby(df['TIMESTAMP'].dt.date).size().reset_index(name='total_requests')
-st.line_chart(daily_counts.rename(columns={'TIMESTAMP': 'Date'}).set_index('Date'))
+if not df.empty:
+    daily_counts = df.groupby(df["TIMESTAMP"].dt.date).size().reset_index(name="total_requests")
+    st.line_chart(daily_counts.rename(columns={"TIMESTAMP": "Date"}).set_index("Date"))
+else:
+    st.info("No data after filters.")
 
-# --- Intent Distribution ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Intent distribution
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("🧠 Question Intent Distribution")
-st.bar_chart(df['INTENT'].value_counts())
+if not df.empty:
+    st.bar_chart(df["INTENT"].value_counts())
+else:
+    st.info("No data to display intent distribution.")
 
-# --- Questions with SQL ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Questions with generated SQL
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("🙋 Questions by User with Generated SQL")
 questions_df = df[[
-    'TIMESTAMP', 'REQUEST_ID', 'USER_NAME', 'LATEST_QUESTION', 'TEXT_RESPONSE', 'GENERATED_SQL', 'INTENT', 'COMPLEXITY_SCORE'
-]].rename(columns={'LATEST_QUESTION': 'QUESTION'})
-questions_df = questions_df.sort_values(by='TIMESTAMP', ascending=False)
-st.dataframe(questions_df)
+    "TIMESTAMP", "REQUEST_ID", "USER_NAME", "LATEST_QUESTION", "TEXT_RESPONSE",
+    "GENERATED_SQL", "INTENT", "COMPLEXITY_SCORE"
+]].rename(columns={"LATEST_QUESTION": "QUESTION"}).sort_values("TIMESTAMP", ascending=False)
 
-# --- Table Usage ---
+st.dataframe(questions_df, use_container_width=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Most referenced tables
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("📃 Most Referenced Tables")
-def extract_tables(row):
+
+def extract_tables(value: str | None):
+    if not isinstance(value, str):
+        return []
     try:
-        return json.loads(row.replace("\n", "").replace("'", '"'))
-    except:
+        return json.loads(value.replace("\n", "").replace("'", '"'))
+    except Exception:
         return []
 
-all_tables = df['TABLES_REFERENCED'].dropna().apply(extract_tables)
-table_flat = pd.Series([table for sublist in all_tables for table in sublist])
-table_counts = table_flat.value_counts().head(10)
-st.bar_chart(table_counts)
+if df["TABLES_REFERENCED"].notna().any():
+    table_series = df["TABLES_REFERENCED"].dropna().apply(extract_tables)
+    flat_tables  = pd.Series([t for sub in table_series for t in sub])
+    st.bar_chart(flat_tables.value_counts().head(10))
+else:
+    st.info("No table reference data.")
 
-# --- Requests with Warnings ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Requests with warnings
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("⚠️ Requests with Warnings")
-with st.expander("View Requests with Warnings"):
-    warnings_df = df[
-        df['WARNINGS'].notna() &
-        (df['WARNINGS'].str.lower() != 'null') &
-        (df['WARNINGS'] != '[]')
-    ][[
-        'TIMESTAMP', 'USER_NAME', 'LATEST_QUESTION', 'WARNINGS'
-    ]].rename(columns={'LATEST_QUESTION': 'QUESTION'})
-    st.dataframe(warnings_df)
+with st.expander("Show Warnings"):
+    warn_df = df[
+        df["WARNINGS"].notna() &
+        (df["WARNINGS"].str.lower() != "null") &
+        (df["WARNINGS"] != "[]")
+    ][["TIMESTAMP", "USER_NAME", "LATEST_QUESTION", "WARNINGS"]].rename(columns={"LATEST_QUESTION": "QUESTION"})
+    st.dataframe(warn_df, use_container_width=True)
 
-# --- Top Warning Patterns ---
 st.subheader("🚨 Top Warning Patterns")
-warning_patterns = df['WARNINGS'][
-    df['WARNINGS'].notna() &
-    (df['WARNINGS'].str.lower() != 'null') &
-    (df['WARNINGS'] != '[]')
-].value_counts().head(10)
-st.bar_chart(warning_patterns)
+warning_series = df["WARNINGS"][
+    df["WARNINGS"].notna() &
+    (df["WARNINGS"].str.lower() != "null") &
+    (df["WARNINGS"] != "[]")
+]
+if not warning_series.empty:
+    st.bar_chart(warning_series.value_counts().head(10))
+else:
+    st.info("No warnings to summarize.")
 
-# --- Failed Requests ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Failed requests
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("🚫 Failed Requests")
-with st.expander("View Failed Requests"):
-    failed_df = df[df['GENERATED_SQL'].isnull()][[
-        'TIMESTAMP', 'USER_NAME', 'LATEST_QUESTION', 'RESPONSE_STATUS_CODE', 'WARNINGS'
-    ]].rename(columns={'LATEST_QUESTION': 'QUESTION'})
-    st.dataframe(failed_df)
+with st.expander("Show Failed Requests"):
+    failed_df = df[df["GENERATED_SQL"].isnull()][[
+        "TIMESTAMP", "USER_NAME", "LATEST_QUESTION", "RESPONSE_STATUS_CODE", "WARNINGS"
+    ]].rename(columns={"LATEST_QUESTION": "QUESTION"})
+    st.dataframe(failed_df, use_container_width=True)
 
-# --- Requests Per User ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Requests per user
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("👥 Requests Per User")
-st.bar_chart(df['USER_NAME'].value_counts())
+if not df.empty:
+    st.bar_chart(df["USER_NAME"].value_counts())
+else:
+    st.info("No user data available.")
 
-# --- Success vs Failure by User ---
+# ──────────────────────────────────────────────────────────────────────────────
+# Success vs failure by user
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("✅ Success vs ❌ Failure by User")
-df['SUCCESS'] = df['GENERATED_SQL'].notna()
-success_df = df.groupby(['USER_NAME', 'SUCCESS']).size().unstack(fill_value=0)
-success_df['Total'] = success_df.sum(axis=1)
-success_df = success_df.sort_values(by='Total', ascending=False)
-st.bar_chart(success_df.drop(columns='Total'))
 
-# --- User Activity Table ---
-st.subheader("🔍 User Activity Table")
-user_counts = df['USER_NAME'].value_counts().reset_index()
-user_counts.columns = ['USER_NAME', 'TOTAL_REQUESTS']
-st.dataframe(user_counts)
-
-# --- Feedback Summary ---
-st.subheader("💬 Feedback Summary")
-with st.expander("View Feedback"):
-    feedback_df = df[df['FEEDBACK'].notna() & (df['FEEDBACK'] != '[]')][[
-        'TIMESTAMP', 'USER_NAME', 'LATEST_QUESTION', 'FEEDBACK'
-    ]].rename(columns={'LATEST_QUESTION': 'QUESTION'})
-    st.dataframe(feedback_df)
+if not df.empty:
+    df["SUCCESS"] = df["GENERATED_SQL"].notna()
+    sf_df = df.groupby(["USER_NAME", "SUCCESS"]).size().unstack(fill_value=0)
+    sf_df["Total"] = sf_df.sum(axis=1)          # ← axis=1 closes the paren
+    st.bar_chart(sf_df.drop(columns="Total"))
+else:
+    st.info("No success/failure data for selected filters.")
