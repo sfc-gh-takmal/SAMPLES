@@ -54,3 +54,32 @@ A demonstration notebook showcasing how to interact with Snowflake's Cortex Anal
 3. Make API calls with natural language queries
 4. Extract and execute SQL statements from responses
 5. Analyze the results
+
+### 4. `LLM_PROMPT_ENGINEERING_SF.ipynb`
+A comprehensive guide to prompt engineering with Snowflake Cortex, demonstrating best practices for leveraging Snowflake's AI_COMPLETE function and other AI SQL functions.
+
+**Key Topics Covered:**
+- **Simple Prompts:** Direct questions using default model parameters
+- **LLM as a Judge:** Using models to evaluate other model outputs with structured scoring
+- **Chain-of-Thought Reasoning:** Step-by-step analysis using `<thinking>` and `<answer>` tags
+- **Structured Output:** JSON schema enforcement for reliable data extraction
+- **Model Parameter Tuning:** Controlling temperature, top_p, and max_tokens for different use cases
+- **Few-Shot Prompting:** Providing examples to guide model behavior
+- **Business Decision Analysis:** Complex reasoning for strategic decisions
+- **Role Prompting:** Setting assistant personas and behaviors
+- **Classification and Filtering:** Using AI_CLASSIFY, AI_FILTER, and AI_SIMILARITY functions
+- **Guardrails and Data Privacy:** Protecting sensitive information in AI applications
+
+**Best Practices Highlighted:**
+- Clear and specific instructions with structural markers
+- Repeating critical instructions at the end of prompts
+- Using tags to separate content, reasoning, and outputs
+- Providing diverse examples for pattern learning
+- Tuning model parameters based on use case requirements
+- Implementing data privacy safeguards
+
+**Usage:**
+1. Review the best practices section for effective prompt design
+2. Explore different prompting techniques with provided SQL examples
+3. Experiment with model parameters for your specific use cases
+4. Implement appropriate guardrails for production applications
