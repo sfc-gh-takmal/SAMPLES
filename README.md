@@ -83,3 +83,36 @@ A comprehensive guide to prompt engineering with Snowflake Cortex, demonstrating
 2. Explore different prompting techniques with provided SQL examples
 3. Experiment with model parameters for your specific use cases
 4. Implement appropriate guardrails for production applications
+
+### 5. `batch_cortex_analyst_tester.py`
+A Streamlit application designed to run within Snowflake for batch testing of Cortex Analyst queries. This tool allows you to test multiple natural language questions against your semantic model in one go and analyze the results.
+
+**Key Features:**
+- **Batch Processing:** Test multiple natural language questions simultaneously
+- **Comprehensive Results:** Captures interpretation, follow-up suggestions, generated SQL, and query execution results
+- **Query Execution:** Automatically executes generated SQL with configurable row limits for preview
+- **Result Management:** 
+  - Download results as CSV
+  - Save results directly to Snowflake tables (create new, replace, or append)
+  - Clear and re-run tests as needed
+- **Metadata Tracking:** Records Query IDs, Request IDs, and timestamps for audit trails
+- **Error Handling:** Graceful handling of failed queries with detailed error messages
+- **Interactive UI:** Clean interface with progress tracking and expandable options
+
+**Workflow:**
+1. Provide the fully-qualified stage path to your semantic model YAML file
+2. Enter multiple questions (one per line) in natural language
+3. Configure preview row limits and processing options
+4. Run batch tests to get comprehensive results including:
+   - Analyst's interpretation of each question
+   - Generated SQL statements
+   - Query execution results (preview)
+   - Follow-up question suggestions
+   - Query and Request IDs for tracking
+
+**Usage:**
+1. Deploy as a Streamlit app in Snowflake
+2. Configure your semantic model stage path
+3. Input your test questions (one per line)
+4. Review results and download or save to Snowflake tables
+5. Use for regression testing, model validation, and query optimization
